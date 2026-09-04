@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 
-from ..src.deps import check_claude, check_codex, verify_github
+from src.deps import check_claude, check_codex, verify_github
 from schemas import Github
 
 app = FastAPI()
@@ -10,5 +10,7 @@ async def start_agent(payload: Github):
 
     if payload.action != "labeled":
         return {"status": "skipped"}
+
+    return {"status": "started agent"}
 
     
