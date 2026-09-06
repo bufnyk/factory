@@ -1,4 +1,4 @@
-from src.deps import check_ai, verify_github
+from src.deps import verify_github, check_claude, check_codex
 from api.main import start_agent
 import pytest
 import hmac
@@ -8,6 +8,7 @@ from config import get_settings
 from fastapi import HTTPException
 from schemas import Github
 from pydantic import ValidationError
+import json
 
 settings = get_settings()
 
@@ -54,6 +55,36 @@ async def test_github_full_payload():
     }
     
     assert await start_agent(Github.model_validate(payload)) == {"status": "started agent"}
-    
-    with pytest.raises(Exception):
+
+    with pytest.raises(ValidationError):
         Github.model_validate(error_payload)
+
+@pytest.mark.asyncio
+async def test_check_claude_success(mocker):
+    mock_config = mocker.patch("src.deps.CLAUDE_CONFIG")
+    mock_config.is_file.return_value = True
+    mock_config.read_text.return_value = json.dumps(
+        {"oauthAccount": {"accountUuid": "usr_99a8b7c6", "emailAddress": "dev@test.com"}}
+    )
+
+    assert await check_claude() is True
+
+@pytest.mark.asyncio
+async def test_check_codex_success_via_tokens(mocker):
+    mock_auth = mocker.patch("src.deps.CODEX_AUTH_PATH")
+    mock_auth.is_file.return_value = True
+    mock_auth.read_text.return_value = json.dumps(
+        {"OPENAI_API_KEY": None, "tokens": {"access_token": "secret_token_123"}}
+    )
+
+    assert await check_codex() is True
+
+@pytest.mark.asyncio
+async def test_smoke_test_claude():
+    assert await check_claude()
+
+@pytest.mark.asyncio
+async def test_smoke_test_codex():
+    assert await check_codex()
+
+

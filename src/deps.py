@@ -2,68 +2,59 @@ from fastapi import status, HTTPException, Request, Header
 from config import get_settings
 import hashlib
 import hmac
-from typing import Annotated, Sequence
-import asyncio
+from typing import Annotated
+import json
+from pathlib import Path
 
 settings = get_settings()
+CLAUDE_CONFIG = Path.home() / ".claude.json"
+CODEX_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 
-async def check_ai(name: str = "LLM", phrases: Sequence[str] = ["Accessing workspace:", "Do you trust the contents of this directory?"]) -> bool:
+def is_claude_authenticated() -> bool:
+    if not CLAUDE_CONFIG.is_file():
+        return False
+    try:
+        data = json.loads(CLAUDE_CONFIG.read_text(encoding="utf-8"))
+        oauth = data.get("oauthAccount")
+        return bool(oauth and oauth.get("accountUuid"))
+    except (json.JSONDecodeError, OSError):
+        return False
 
-    process = await asyncio.create_subprocess_exec(
-        name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-        stdin=asyncio.subprocess.DEVNULL,
-    )
+
+async def check_claude() -> bool:
+    if not is_claude_authenticated():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Claude session expired or unauthenticated",
+        )
+    return True
+
+def is_codex_authenticated() -> bool:
+    if not CODEX_AUTH_PATH.is_file():
+        return False
 
     try:
+        data = json.loads(CODEX_AUTH_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
 
-        async with asyncio.timeout(4.0):
-            output_text = ""
+    if data.get("OPENAI_API_KEY"):
+        return True
 
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
+    tokens = data.get("tokens")
+    if isinstance(tokens, dict) and len(tokens) > 0:
+        return True
 
-                text = line.decode("utf-8", errors="replace")
-                output_text += text
+    return False
 
-                for phrase in phrases:
-                    if phrase in output_text:
-                        return True
 
-                if (
-                    "login" in output_text.lower()
-                    or "unauthorized" in output_text.lower()
-                ):
-                    #TO DO 
-                    #jakaś logika powiadomienia jesli brak sesji
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail=f"{name} session expired"
-                    )
-    #Tutaj jakaś logika retry        
-    except TimeoutError:
+async def check_codex() -> bool:
+    if not is_codex_authenticated():
         raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=f"{name} did not respond in time"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Codex session expired or missing tokens in ~/.codex/auth.json",
         )
-
-    finally:
-        process.kill()
-        await process.wait()
-        
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=f"{name} session expired"
-    )
-
-async def check_codex():
-    await check_ai("codex", ("You are in", "Do you trust the contents of this directory?"))
-
-async def check_claude():
-    await check_ai("claude", ("Accessing workspace:", "Quick safety check:"))
+    return True
 
 async def verify_github(request: Request, x_hub_signature_256: Annotated[str | None, Header()] = None) -> bool:
 
