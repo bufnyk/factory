@@ -2,3 +2,5 @@ fastapi[all]>=0.141.1
 pytest>=9.1.1
 pytest-asyncio>=9.1.1
 pytest-mock>=9.1.1
+taskiq>=0.12.6
+taskiq-redis
