@@ -9,6 +9,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
     gh_secret: SecretStr
+    claude_setup_token: SecretStr
 
 @lru_cache
 def get_settings() -> Settings:

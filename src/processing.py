@@ -1,5 +1,5 @@
 from src.broker import broker
-from schemas import Github
+from schemas import Github, construct_claude_prompt, construct_codex_prompt
 from src.broker import docker_client
 from config import get_settings, Settings
 
@@ -14,7 +14,7 @@ def mark_problem_on_gh(payload: Github, settings: Settings, message: str):
 
 def create_workspace(payload: Github, settings: Settings):
 
-    name = f"job_{payload.issue.number}"
+    name = f"job_{payload.issue.id}"
     volume = docker_client.volumes.create(
         name=name
     )
@@ -42,15 +42,55 @@ def create_workspace(payload: Github, settings: Settings):
 
         if container.wait()["StatusCode"] != 0:
             volume.remove()
-            mark_problem_on_gh(payload, settings, "There was a problem while cloning git repo")
+            logs = container.logs().decode()
+            mark_problem_on_gh(payload, settings, f"logs: {str(logs)}")
             raise Exception
-         
-
-        return volume.name
-
+        
     finally:
         if container is not None:
             container.remove()  
 
-def run_claude()
+    container = docker_client.containers.run(
+        image="agent-runtime:latest",
+        command=["sleep", "infinity"],
+        working_dir="/workspace",
+        volumes={
+            volume.name: {
+                "bind": "/workspace",
+                "mode": "rw",
+            }
+        },
+        environment={
+            "CLAUDE_CODE_OAUTH_TOKEN": settings.claude_setup_token.get_secret_value(),
+        },
+        detach=True,
+    )
+    return container
+
+def run_agentic_loop(payload: Github, container, settings: Settings):
+
+    prompt_claude = construct_claude_prompt(payload)
+    prompt_codex = construct_codex_prompt(payload)
+
+    result = container.exec_run(
+        cmd=[
+            "claude",
+            "-p",
+            prompt_claude,
+            "--model opus-5",
+            "--output-format",
+            "json",
+        ],
+        working_dir="/workspace",
+    )
+
+    if result.exit_code != 0:
+        logs = container.logs().decode()
+        container.remove()
+        mark_problem_on_gh(payload, settings, f"logs: {str(logs)}")
+        raise Exception
+
+   
+
+
 
