@@ -72,25 +72,55 @@ def run_agentic_loop(payload: Github, container, settings: Settings):
     prompt_claude = construct_claude_prompt(payload)
     prompt_codex = construct_codex_prompt(payload)
 
-    result = container.exec_run(
-        cmd=[
-            "claude",
-            "-p",
-            prompt_claude,
-            "--model opus-5",
-            "--output-format",
-            "json",
-        ],
-        working_dir="/workspace",
-    )
+    for i in range(4):
+        if i % 2 == 0:
+            run_claude(payload, container, settings, prompt_claude)
+        else:
+            run_codex(payload, container, settings, prompt_codex)
 
+
+def run_claude(payload: Github, container, settings: Settings, prompt: str):
+    result = container.exec_run(
+            cmd=[
+                "claude",
+                "-p",
+                prompt,
+                "--model opus-5",
+                "--output-format",
+                "json",
+            ],
+            working_dir="/workspace",
+        )
+    
     if result.exit_code != 0:
         logs = container.logs().decode()
         container.remove()
         mark_problem_on_gh(payload, settings, f"logs: {str(logs)}")
         raise Exception
 
-   
+    return result.output
+
+def run_codex(payload: Github, container, settings: Settings, prompt: str):
+    result = container.exec_run(
+                cmd=[
+                    "claude",
+                    "-p",
+                    prompt,
+                    "--model opus-5",
+                    "--output-format",
+                    "json",
+                ],
+                working_dir="/workspace",
+            )
+        
+    if result.exit_code != 0:
+        logs = container.logs().decode()
+        container.remove()
+        mark_problem_on_gh(payload, settings, f"logs: {str(logs)}")
+        raise Exception
+    
+    return result.output
+
 
 
 
