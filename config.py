@@ -1,5 +1,5 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict, 
+from pydantic import Field, SecretStr
 from functools import lru_cache
 
 class Settings(BaseSettings):
@@ -8,7 +8,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
-    gh_secret: str
+    gh_secret: SecretStr
 
 @lru_cache
 def get_settings() -> Settings:
