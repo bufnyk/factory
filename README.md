@@ -1,6 +1,6 @@
 # AI factory
 
-Webhook GitHub uruchamia zadanie po dodaniu etykiety `ai` do issue. Worker klonuje repozytorium do osobnego wolumenu Docker, instaluje zależności z manifestów w jego katalogu głównym i uruchamia CLI Claude Code oraz Codex w kontenerze. Claude zmienia kod aplikacji, Codex przegląda zmiany, tworzy testy zachowania i uruchamia je. Gdy Codex zwróci poprawny wynik JSON z `verdict: PASS`, worker wypycha gałąź, tworzy pull request i dodaje link w komentarzu issue. Błąd oraz ostatnia odpowiedź agenta trafiają do tego samego issue przez `mark_problem_on_gh`.
+Webhook GitHub uruchamia zadanie po dodaniu etykiety `ai` do issue. Worker klonuje repozytorium do osobnego wolumenu Docker, instaluje zależności z manifestów w jego katalogu głównym i uruchamia CLI Claude Code oraz Codex w kontenerze. Claude zmienia kod aplikacji, Codex przegląda zmiany, tworzy testy zachowania i uruchamia je. Gdy Codex zaakceptuje zmianę, worker wypycha gałąź, tworzy pull request i dodaje link w komentarzu issue. Jeśli po wszystkich turach Codex nie zaakceptuje zmiany, worker nadal tworzy draft PR, a w komentarzu issue podaje link i ostatnią opinię Codexa. Błędy techniczne trafiają do issue przez `mark_problem_on_gh`.
 
 ## Przygotowanie
 

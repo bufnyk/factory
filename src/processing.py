@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import tarfile
+from dataclasses import dataclass
 from uuid import uuid4
 
 import docker
@@ -20,6 +21,13 @@ MAX_REPORT = 12000
 
 class PipelineError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class PipelineResult:
+    pr_url: str
+    approved: bool
+    review: str
 
 
 def _redact(message: str, settings: Settings) -> str:
@@ -179,7 +187,7 @@ def _enforce_role(before: dict[str, str], after: dict[str, str], agent: str) -> 
     return changed
 
 
-def _run_pipeline(payload: Github, settings: Settings) -> str:
+def _run_pipeline(payload: Github, settings: Settings) -> PipelineResult:
     client = docker.from_env(timeout=3600)
     volume = client.volumes.create(name=f"factory_{payload.issue.id}_{uuid4().hex[:8]}")
     agent = None
@@ -206,7 +214,7 @@ def _run_pipeline(payload: Github, settings: Settings) -> str:
         )
         _install_dependencies(agent, settings)
         review_feedback = ""
-        approved_review = None
+        approved = False
         tests_written = False
         for _ in range(settings.loop_limit // 2):
             before_claude = _workspace_snapshot(agent, settings)
@@ -233,14 +241,16 @@ def _run_pipeline(payload: Github, settings: Settings) -> str:
             except ValidationError as exc:
                 raise PipelineError(f"Codex returned an invalid structured review: {_redact(str(exc), settings)}") from exc
             review_feedback = review.feedback()
-            if review.verdict == "PASS" and review.tests_passed and review.test_commands:
-                approved_review = review
+            if review.verdict == "PASS" and review.tests_passed and review.test_commands and tests_written:
+                approved = True
                 break
-        else:
-            raise PipelineError(f"Codex did not approve after {settings.loop_limit // 2} reviews. Last review:\n{_redact(review_feedback, settings)}")
 
-        if not tests_written:
-            raise PipelineError("Codex approved without creating or updating a behavior test")
+        review_report = _redact(review_feedback, settings)
+        if not approved:
+            reason = f"Codex did not approve after {settings.loop_limit // 2} reviews."
+            if not tests_written:
+                reason += " No behavior test was created or updated."
+            review_report = f"{reason}\n\nLast review:\n{review_report}"
 
         status = _exec_agent(agent, "Git", ["git", "status", "--porcelain"], settings)
         if not status.strip():
@@ -252,7 +262,8 @@ def _run_pipeline(payload: Github, settings: Settings) -> str:
             ISSUE_NUMBER=str(payload.issue.number),
             BRANCH=branch,
         )
-        return create_pull_request(payload, settings, branch, _redact(approved_review.feedback(), settings))
+        pr_url = create_pull_request(payload, settings, branch, review_report, draft=not approved)
+        return PipelineResult(pr_url=pr_url, approved=approved, review=review_report)
     finally:
         if agent is not None:
             agent.remove(force=True)
@@ -264,10 +275,14 @@ async def start_agentic_pipeline(payload_data: dict) -> None:
     payload = Github.model_validate(payload_data)
     settings = get_settings()
     try:
-        pr_url = await asyncio.to_thread(_run_pipeline, payload, settings)
+        result = await asyncio.to_thread(_run_pipeline, payload, settings)
     except Exception as exc:
         message = _redact(str(exc), settings)
         logger.exception("Factory failed for issue %s", payload.issue.number)
         await asyncio.to_thread(mark_problem_on_gh, payload, settings, message)
         raise
-    await asyncio.to_thread(comment_on_issue, payload, settings, f"AI factory completed the issue: {pr_url}")
+    if result.approved:
+        message = f"AI factory completed the issue: {result.pr_url}"
+    else:
+        message = f"AI factory created a draft PR without Codex approval: {result.pr_url}\n\n{result.review}"
+    await asyncio.to_thread(comment_on_issue, payload, settings, message)

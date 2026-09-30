@@ -55,9 +55,13 @@ def test_passed_review_creates_pr_and_cleans_up(monkeypatch, pipeline, payload):
     monkeypatch.setattr(processing, "_exec_agent", run)
     snapshots = iter([{}, {"src/app.py": "code"}, {"src/app.py": "code"}, {"src/app.py": "code", "tests/test_app.py": "test"}])
     monkeypatch.setattr(processing, "_workspace_snapshot", lambda *args: next(snapshots))
-    monkeypatch.setattr(processing, "create_pull_request", lambda *args: "https://github.com/example/shop/pull/3")
+    created = []
+    monkeypatch.setattr(processing, "create_pull_request", lambda *args, **kwargs: created.append(kwargs) or "https://github.com/example/shop/pull/3")
 
-    assert processing._run_pipeline(payload, settings).endswith("/pull/3")
+    result = processing._run_pipeline(payload, settings)
+    assert result.pr_url.endswith("/pull/3")
+    assert result.approved
+    assert created == [{"draft": False}]
     assert [role for role, _ in calls] == ["Claude", "Codex", "Git"]
     assert calls[0][1][calls[0][1].index("--model") + 1] == "claude-opus-5-5"
     assert calls[0][1][calls[0][1].index("--effort") + 1] == "high"
@@ -66,23 +70,39 @@ def test_passed_review_creates_pr_and_cleans_up(monkeypatch, pipeline, payload):
     assert volume.removed and agent.removed
 
 
-def test_failed_review_returns_feedback_to_claude_and_does_not_publish(monkeypatch, pipeline, payload):
+def test_failed_review_creates_draft_pr_and_keeps_codex_feedback(monkeypatch, pipeline, payload):
     settings, volume, agent = pipeline
     prompts = []
+    created = []
 
     def run(container, role, command, settings):
         if role == "Claude":
             prompts.append(command[2])
             return "implementation done"
+        if role == "Git":
+            return " M app.py"
         return json.dumps({"verdict": "FAIL", "summary": "Checkout returns 500 for empty cart", "findings": ["Boundary case fails"], "test_commands": ["pytest -q"], "tests_passed": False})
 
-    monkeypatch.setattr(processing, "_exec_agent", run)
-    monkeypatch.setattr(processing, "create_pull_request", lambda *args: pytest.fail("PR must not be created"))
+    def create_pr(*args, **kwargs):
+        created.append((args, kwargs))
+        return "https://github.com/example/shop/pull/3"
 
-    with pytest.raises(processing.PipelineError, match="did not approve"):
-        processing._run_pipeline(payload, settings)
-    assert len(prompts) == 2
+    monkeypatch.setattr(processing, "_exec_agent", run)
+    snapshots = iter([
+        {}, {"src/app.py": "first"}, {"src/app.py": "first"}, {"src/app.py": "first", "tests/test_app.py": "test"},
+        {"src/app.py": "first", "tests/test_app.py": "test"}, {"src/app.py": "second", "tests/test_app.py": "test"},
+        {"src/app.py": "second", "tests/test_app.py": "test"}, {"src/app.py": "second", "tests/test_app.py": "test"},
+    ])
+    monkeypatch.setattr(processing, "_workspace_snapshot", lambda *args: next(snapshots))
+    monkeypatch.setattr(processing, "create_pull_request", create_pr)
+
+    result = processing._run_pipeline(payload, settings)
+    assert result.pr_url.endswith("/pull/3")
+    assert not result.approved
+    assert "Checkout returns 500 for empty cart" in result.review
     assert "Checkout returns 500 for empty cart" in prompts[1]
+    assert created[0][1]["draft"] is True
+    assert "did not approve after 2 reviews" in created[0][0][3]
     assert volume.removed and agent.removed
 
 
@@ -100,12 +120,27 @@ def test_role_guard_accepts_codex_behavior_test_changes():
     processing._enforce_role({"src/checkout.py": "same"}, {"src/checkout.py": "same", "tests/test_checkout.py": "new"}, "Codex")
 
 
-def test_review_cannot_pass_without_writing_behavior_tests(monkeypatch, pipeline, payload):
+def test_missing_behavior_tests_produces_unapproved_draft(monkeypatch, pipeline, payload):
     settings, _, _ = pipeline
-    monkeypatch.setattr(processing, "_exec_agent", lambda *args: json.dumps({"verdict": "PASS", "summary": "Tests passed", "findings": [], "test_commands": ["pytest -q"], "tests_passed": True}))
-    monkeypatch.setattr(processing, "create_pull_request", lambda *args: pytest.fail("PR must not be created"))
-    with pytest.raises(processing.PipelineError, match="without creating or updating a behavior test"):
-        processing._run_pipeline(payload, settings)
+    created = []
+
+    def run(container, role, command, settings):
+        if role == "Git":
+            return " M src/app.py"
+        return json.dumps({"verdict": "PASS", "summary": "Tests passed", "findings": [], "test_commands": ["pytest -q"], "tests_passed": True})
+
+    monkeypatch.setattr(processing, "_exec_agent", run)
+    snapshots = iter([
+        {}, {"src/app.py": "first"}, {"src/app.py": "first"}, {"src/app.py": "first"},
+        {"src/app.py": "first"}, {"src/app.py": "second"}, {"src/app.py": "second"}, {"src/app.py": "second"},
+    ])
+    monkeypatch.setattr(processing, "_workspace_snapshot", lambda *args: next(snapshots))
+    monkeypatch.setattr(processing, "create_pull_request", lambda *args, **kwargs: created.append(kwargs) or "https://github.com/example/shop/pull/4")
+
+    result = processing._run_pipeline(payload, settings)
+    assert not result.approved
+    assert "No behavior test was created or updated" in result.review
+    assert created == [{"draft": True}]
 
 
 def test_invalid_codex_result_never_approves(monkeypatch, pipeline, payload):
@@ -124,3 +159,23 @@ def test_codex_jsonl_requires_completed_turn():
         processing._agent_result(event, "Codex")
     with pytest.raises(processing.PipelineError, match="failed turn"):
         processing._agent_result(event + "\n" + json.dumps({"type": "turn.failed"}), "Codex")
+
+
+@pytest.mark.asyncio
+async def test_unapproved_pr_is_reported_in_issue_comment(monkeypatch, pipeline, payload):
+    settings, _, _ = pipeline
+    comments = []
+    monkeypatch.setattr(processing, "get_settings", lambda: settings)
+    monkeypatch.setattr(processing, "_run_pipeline", lambda *args: processing.PipelineResult(
+        pr_url="https://github.com/example/shop/pull/3",
+        approved=False,
+        review="Codex did not approve. Last review: checkout returns 500",
+    ))
+    monkeypatch.setattr(processing, "comment_on_issue", lambda payload, settings, message: comments.append(message))
+
+    await processing.start_agentic_pipeline.original_func(payload.model_dump(mode="json"))
+
+    assert len(comments) == 1
+    assert "draft PR without Codex approval" in comments[0]
+    assert "/pull/3" in comments[0]
+    assert "checkout returns 500" in comments[0]

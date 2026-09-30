@@ -27,7 +27,7 @@ def comment_on_issue(payload: Github, settings: Settings, message: str) -> None:
         response.raise_for_status()
 
 
-def create_pull_request(payload: Github, settings: Settings, branch: str, review: str) -> str:
+def create_pull_request(payload: Github, settings: Settings, branch: str, review: str, draft: bool = False) -> str:
     url = f"/repos/{payload.repository.full_name}/pulls"
     with _client(settings) as client:
         response = client.post(
@@ -36,6 +36,7 @@ def create_pull_request(payload: Github, settings: Settings, branch: str, review
                 "title": f"Fix #{payload.issue.number}: {payload.issue.title}",
                 "head": branch,
                 "base": payload.repository.default_branch,
+                "draft": draft,
                 "body": f"Closes #{payload.issue.number}\n\nCodex review and behavior tests:\n\n{review[:12000]}",
             },
         )
