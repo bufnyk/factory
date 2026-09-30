@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {"type": "string", "enum": ["PASS", "FAIL"]},
+    "summary": {"type": "string"},
+    "findings": {"type": "array", "items": {"type": "string"}},
+    "test_commands": {"type": "array", "items": {"type": "string"}},
+    "tests_passed": {"type": "boolean"}
+  },
+  "required": ["verdict", "summary", "findings", "test_commands", "tests_passed"],
+  "additionalProperties": false
+}

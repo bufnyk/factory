@@ -6,9 +6,10 @@ import tarfile
 from uuid import uuid4
 
 import docker
+from pydantic import ValidationError
 
 from config import Settings, get_settings
-from schemas import Github, construct_claude_prompt, construct_codex_prompt
+from schemas import CodexReview, Github, construct_claude_prompt, construct_codex_prompt
 from src.broker import broker
 from src.github import comment_on_issue, create_pull_request, mark_problem_on_gh
 
@@ -65,16 +66,25 @@ def _agent_result(raw: str, agent: str) -> str:
             return json.loads(raw).get("result", raw)
         except json.JSONDecodeError:
             return raw
+    if agent != "Codex":
+        return raw
     final = ""
+    completed = False
     for line in raw.splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if event.get("type") in {"turn.failed", "error"}:
+            raise PipelineError("Codex reported a failed turn")
+        if event.get("type") == "turn.completed":
+            completed = True
         item = event.get("item", {})
         if event.get("type") == "item.completed" and item.get("type") == "agent_message":
             final = item.get("text", final)
-    return final or raw
+    if not completed or not final:
+        raise PipelineError("Codex did not return a completed review")
+    return final
 
 
 def _exec_agent(container, agent: str, command: list[str], settings: Settings) -> str:
@@ -111,12 +121,12 @@ def _copy_codex_auth(container, settings: Settings) -> None:
         info.mode = 0o600
         info.uid = info.gid = 1000
         tar.addfile(info, io.BytesIO(auth))
-    if not container.put_archive("/home/agent/.codex", archive.getvalue()):
+    if not container.put_archive("/home/node/.codex", archive.getvalue()):
         raise PipelineError("Could not copy Codex login into agent container")
 
 
 def _remove_codex_auth(container) -> None:
-    result = container.exec_run(["rm", "-f", "/home/agent/.codex/auth.json"])
+    result = container.exec_run(["rm", "-f", "/home/node/.codex/auth.json"])
     if result.exit_code:
         raise PipelineError("Could not remove Codex login from agent container")
 
@@ -186,7 +196,7 @@ def _run_pipeline(payload: Github, settings: Settings) -> str:
             command=["sleep", "infinity"],
             working_dir="/workspace",
             volumes={volume.name: {"bind": "/workspace", "mode": "rw"}},
-            user="agent",
+            user="node",
             pids_limit=512,
             mem_limit="4g",
             cap_drop=["ALL"],
@@ -194,32 +204,39 @@ def _run_pipeline(payload: Github, settings: Settings) -> str:
             detach=True,
         )
         _install_dependencies(agent, settings)
-        review = ""
+        review_feedback = ""
+        approved_review = None
         tests_written = False
         for _ in range(settings.loop_limit // 2):
             before_claude = _workspace_snapshot(agent, settings)
             _exec_agent(
                 agent, "Claude",
-                ["claude", "-p", construct_claude_prompt(payload, review), "--model", settings.claude_model, "--output-format", "json", "--dangerously-skip-permissions"],
+                ["claude", "-p", construct_claude_prompt(payload, review_feedback), "--model", settings.claude_model, "--effort", settings.claude_effort, "--output-format", "json", "--dangerously-skip-permissions"],
                 settings,
             )
             _enforce_role(before_claude, _workspace_snapshot(agent, settings), "Claude")
             before_codex = _workspace_snapshot(agent, settings)
             _copy_codex_auth(agent, settings)
             try:
-                review = _exec_agent(
+                review_output = _exec_agent(
                     agent, "Codex",
-                    ["codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", construct_codex_prompt(payload)],
+                    ["codex", "exec", "--model", settings.codex_model, "--config", f"model_reasoning_effort={settings.codex_reasoning_effort}", "--json", "--dangerously-bypass-approvals-and-sandbox", "--output-schema", "/opt/factory/codex-review.schema.json", construct_codex_prompt(payload)],
                     settings,
                 )
             finally:
                 _remove_codex_auth(agent)
             changed_by_codex = _enforce_role(before_codex, _workspace_snapshot(agent, settings), "Codex")
             tests_written |= any(_is_test_file(path) for path in changed_by_codex)
-            if review.rstrip().endswith("VERDICT: PASS"):
+            try:
+                review = CodexReview.model_validate_json(review_output)
+            except ValidationError as exc:
+                raise PipelineError(f"Codex returned an invalid structured review: {_redact(str(exc), settings)}") from exc
+            review_feedback = review.feedback()
+            if review.verdict == "PASS" and review.tests_passed and review.test_commands:
+                approved_review = review
                 break
         else:
-            raise PipelineError(f"Codex did not approve after {settings.loop_limit // 2} reviews. Last review:\n{_redact(review, settings)}")
+            raise PipelineError(f"Codex did not approve after {settings.loop_limit // 2} reviews. Last review:\n{_redact(review_feedback, settings)}")
 
         if not tests_written:
             raise PipelineError("Codex approved without creating or updating a behavior test")
@@ -234,7 +251,7 @@ def _run_pipeline(payload: Github, settings: Settings) -> str:
             ISSUE_NUMBER=str(payload.issue.number),
             BRANCH=branch,
         )
-        return create_pull_request(payload, settings, branch, _redact(review, settings))
+        return create_pull_request(payload, settings, branch, _redact(approved_review.feedback(), settings))
     finally:
         if agent is not None:
             agent.remove(force=True)

@@ -14,17 +14,66 @@ services:
 
   api:
     build: .
-    env_file: .env
     environment:
+      GH_SECRET: ${GH_SECRET:?Set GH_SECRET in .env}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?Set GITHUB_TOKEN in .env}
+      CLAUDE_SETUP_TOKEN: ${CLAUDE_SETUP_TOKEN:?Set CLAUDE_SETUP_TOKEN in .env}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-opus-5-5}
+      CLAUDE_EFFORT: ${CLAUDE_EFFORT:-high}
+      CODEX_MODEL: ${CODEX_MODEL:-gpt-6-sol}
+      CODEX_REASONING_EFFORT: ${CODEX_REASONING_EFFORT:-high}
+      LOOP_LIMIT: ${LOOP_LIMIT:-4}
       REDIS_URL: redis://redis_db:6379/0
       CODEX_AUTH_PATH: /run/codex-auth/auth.json
     volumes:
       - ${HOME}/.codex/auth.json:/run/codex-auth/auth.json:ro
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       redis_db:
         condition: service_healthy
+
+  agent_runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    image: factory-runtime:local
+    command: ["true"]
+    restart: "no"
+
+  worker:
+    build: .
+    command: ["taskiq", "worker", "src.broker:broker", "src.processing", "--workers", "1", "--max-async-tasks", "1"]
+    restart: unless-stopped
+    init: true
+    environment:
+      GH_SECRET: ${GH_SECRET:?Set GH_SECRET in .env}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?Set GITHUB_TOKEN in .env}
+      CLAUDE_SETUP_TOKEN: ${CLAUDE_SETUP_TOKEN:?Set CLAUDE_SETUP_TOKEN in .env}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-opus-5-5}
+      CLAUDE_EFFORT: ${CLAUDE_EFFORT:-high}
+      CODEX_MODEL: ${CODEX_MODEL:-gpt-6-sol}
+      CODEX_REASONING_EFFORT: ${CODEX_REASONING_EFFORT:-high}
+      LOOP_LIMIT: ${LOOP_LIMIT:-4}
+      REDIS_URL: redis://redis_db:6379/0
+      CODEX_AUTH_PATH: /run/codex-auth/auth.json
+    volumes:
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${HOME}/.codex/auth.json:/run/codex-auth/auth.json:ro
+    depends_on:
+      redis_db:
+        condition: service_healthy
+      agent_runtime:
+        condition: service_completed_successfully
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    restart: unless-stopped
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env}
+    depends_on:
+      - api
 
 volumes:
   redis_data:

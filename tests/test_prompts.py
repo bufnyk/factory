@@ -14,5 +14,5 @@ def test_codex_prompt_requires_behavior_tests_and_explicit_verdict(payload):
     assert "Do not change production code" in prompt
     assert "observable behavior" in prompt
     assert "do not write tests that only inspect source text" in prompt
-    assert "VERDICT: PASS" in prompt
-    assert "VERDICT: FAIL" in prompt
+    assert "JSON object matching the supplied output schema" in prompt
+    assert "actual test commands" in prompt

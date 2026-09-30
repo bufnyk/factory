@@ -5,15 +5,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     golang-go cargo default-jdk \
     && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
-RUN useradd -m -u 1000 -s /bin/bash agent \
-    && mkdir -p /home/agent/.codex \
-    && python3 -m venv /home/agent/.venv \
-    && chown -R agent:agent /home/agent
+RUN mkdir -p /home/node/.codex \
+    && python3 -m venv /home/node/.venv \
+    && chown -R node:node /home/node
 
 COPY docker/github-askpass /usr/local/bin/github-askpass
+COPY docker/codex-review.schema.json /opt/factory/codex-review.schema.json
 RUN chmod 755 /usr/local/bin/github-askpass
 
-ENV HOME=/home/agent
-ENV PATH=/home/agent/.venv/bin:$PATH
+ENV HOME=/home/node
+ENV PATH=/home/node/.venv/bin:$PATH
 WORKDIR /workspace
-USER agent
+USER node
