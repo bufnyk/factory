@@ -98,16 +98,17 @@ def _exec_agent(container, agent: str, command: list[str], settings: Settings) -
 
 def _install_dependencies(container, settings: Settings) -> None:
     script = """set -eu
-if [ -f requirements.txt ]; then pip install -r requirements.txt;
-elif [ -f requirements.in ]; then pip install -r requirements.in;
-elif [ -f pyproject.toml ]; then pip install -e .; fi
+VENV_PYTHON=/home/node/.venv/bin/python
+if [ -f requirements.txt ]; then "$VENV_PYTHON" -m pip install -r requirements.txt;
+elif [ -f requirements.in ]; then "$VENV_PYTHON" -m pip install -r requirements.in;
+elif [ -f pyproject.toml ]; then "$VENV_PYTHON" -m pip install -e .; fi
 if [ -f package.json ]; then
   if [ -f package-lock.json ]; then npm ci; else npm install --no-package-lock; fi
 fi
 if [ -f go.mod ]; then go mod download; fi
 if [ -f Cargo.toml ]; then cargo fetch; fi
 """
-    result = container.exec_run(["sh", "-lc", script], workdir="/workspace")
+    result = container.exec_run(["sh", "-c", script], workdir="/workspace")
     if result.exit_code:
         raise PipelineError(f"Dependency installation failed (exit {result.exit_code}): {_redact(_decode(result.output), settings)}")
 

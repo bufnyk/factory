@@ -8,12 +8,14 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex
 RUN mkdir -p /home/node/.codex \
     && python3 -m venv /home/node/.venv \
     && chown -R node:node /home/node
+RUN printf '%s\n' 'export VIRTUAL_ENV=/home/node/.venv' 'export PATH="$VIRTUAL_ENV/bin:$PATH"' > /etc/profile.d/factory-venv.sh
 
 COPY docker/github-askpass /usr/local/bin/github-askpass
 COPY docker/codex-review.schema.json /opt/factory/codex-review.schema.json
 RUN chmod 755 /usr/local/bin/github-askpass
 
 ENV HOME=/home/node
+ENV VIRTUAL_ENV=/home/node/.venv
 ENV PATH=/home/node/.venv/bin:$PATH
 WORKDIR /workspace
 USER node
