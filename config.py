@@ -1,6 +1,9 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict, 
-from pydantic import Field, SecretStr
 from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -8,8 +11,14 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
     gh_secret: SecretStr
+    github_token: SecretStr
     claude_setup_token: SecretStr
+    claude_model: str = "opus"
+    codex_auth_path: Path = Path.home() / ".codex" / "auth.json"
+    loop_limit: int = Field(ge=2, le=8, multiple_of=2, default=4)
+
 
 @lru_cache
 def get_settings() -> Settings:

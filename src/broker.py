@@ -1,7 +1,5 @@
-from taskiq_redis import RedisStreamBroker
-import docker
+import os
 
-docker_client = docker.from_env()
-broker = RedisStreamBroker(
-    url="redis://redis:6379/0"
-)
+from taskiq_redis import RedisStreamBroker
+
+broker = RedisStreamBroker(url=os.getenv("REDIS_URL", "redis://localhost:6379/0"))
